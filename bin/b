@@ -1,0 +1,189 @@
+#!/bin/bash
+
+# =============================
+# READ EMV
+# =============================
+
+if [[ ! -f "./env" ]]
+then
+  echo "./env file missing"
+  exit 1
+fi
+
+. ./env
+
+# =============================
+# CONSTANTS
+# =============================
+
+DEFAULT_INSTANCE_COUNT=2
+DEFAULT_REMOVE=Y
+
+# =============================
+# FUNCTION
+# =============================
+
+usage () {
+  echo "$1 usage: [-INSTANCE_COUNT <number <=10 >] [ -REMOVE (Y|N) ] - defaults -INSTANCE_COUNT ${DEFAULT_INSTANCE_COUNT} -REMOVE ${DEFAULT_REMOVE} "
+}
+
+instance_count () {
+  FLAG="`echo "$2" | grep '^[0][0123456789]*$' | wc -l | awk '{ print $1 }'`"
+
+  if [[ "${FLAG}" == "1" ]]
+  then
+    usage "error: invalid INSTANCE_COUNT value '$2'"
+    exit 1
+  fi
+
+  FLAG="`echo "$2" | grep '^[0123456789]*$' | wc -l | awk '{ print $1 }'`"
+
+  if [[ "${FLAG}" == "1" ]]
+  then
+    if [[ $2 -eq -0 ]]
+    then
+      usage "error: invalid INSTANCE_COUNT value '$2'"
+      exit 1
+    fi
+    INSTANCE_COUNT=$2
+  else
+    usage "error: invalid INSTANCE_COUNT value '$2'"
+    exit 1
+  fi
+}
+
+remove() {
+  if [[ "$1" != "-REMOVE" ]]
+  then
+    usage "error: invalid argument '$1'."
+    exit 1
+  fi
+
+  if [[ "$2" != "N" && "$2" != "Y" ]]
+  then
+    usage "error: invalid argument '$2'."
+    exit 1
+  fi
+
+  REMOVE="$2"
+}
+
+# =============================
+# PREAMBLE
+# =============================
+
+if [[ "${OSTYPE}" != "linux-gnu"* && "${OSTYPE}" != "darwin"* ]]
+then
+  echo "error: only linux and macOS supported"
+  exit 1
+fi
+
+if [[ "$#" != "0" && "$#" != "2" && "$#" != "4" ]]
+then
+  usage "error: invalid arguments."
+  exit 1
+fi
+
+INSTANCE_COUNT=
+REMOVE=
+
+if [[ "$1" == "-INSTANCE_COUNT" ]]
+then
+  instance_count "$1" "$2"
+
+  if [[ "$#" == "4" ]]
+  then
+    remove "$3" "$4"
+  else
+    REMOVE=${DEFAULT_REMOVE}
+  fi
+
+elif [[ "$1" == "-REMOVE" ]]
+then
+  remove "$1" "$2"
+
+  INSTANCE_COUNT=2
+else
+  if [[ "$#" != "0" ]]
+  then
+    usage "error: invalid parameters"
+    exit 1
+  fi
+
+  INSTANCE_COUNT=2
+  REMOVE=${DEFAULT_REMOVE}
+fi
+
+echo "INSTANCE_COUNT='${INSTANCE_COUNT}'"
+echo "REMOVE='${REMOVE}'"
+
+if [[ ${INSTANCE_COUNT} -gt "10" ]]
+then
+  usage "INSTANCE_COUNT is > 10."
+  exit 1
+fi
+
+X=1
+
+while [[ $X -le $INSTANCE_COUNT ]]
+do
+  TAG_ID_INSTANCE="${TAG_ID}_${X}"
+
+  for i in ` (docker ps --format '{{.ID}};{{.Names}}' 2>&1) | grep ";${TAG_ID_INSTANCE}$"`
+  do
+    CONTAINER_ID=`echo ${i} | cut -d';' -f1`
+    if [[ "${REMOVE}" == "Y" ]]
+    then
+      echo "stopping container '${CONTAINER_ID}'"
+      docker stop "${CONTAINER_ID}" 2>/dev/null
+      sleep 5
+    else
+      CONTAINER_NAME=`echo ${i} | cut -d';' -f2`
+      echo "error: not stopped container ${CONTAINER_ID} / ${CONTAINER_NAME} already exists"
+      exit 1
+    fi
+  done
+
+  for i in ` (docker ps --all --format '{{.ID}};{{.Names}}' 2>&1) | grep ";${TAG_ID_INSTANCE}$"`
+  do
+    CONTAINER_ID=`echo ${i} | cut -d';' -f1`
+    if [[ "${REMOVE}" == "Y" ]]
+    then
+      echo "removing container '${CONTAINER_ID}'"
+      docker rm "${CONTAINER_ID}"
+      sleep 5
+    else
+      CONTAINER_NAME=`echo ${i} | cut -d';' -f2`
+      echo "error: not removed container ${CONTAINER_ID} / ${CONTAINER_NAME} already exists"
+      exit 1
+    fi
+  done
+
+  let X=$((X + 1))
+done
+
+X=1
+
+HTTP_EXTERNAL_PORT_N=$HTTP_EXTERNAL_PORT
+SSH_EXTERNAL_PORT_N=$SSH_EXTERNAL_PORT
+BITCOIN_EXTERNAL_PORT_N=$BITCOIN_EXTERNAL_PORT
+
+docker ps --all
+
+while [[ $X -le $INSTANCE_COUNT ]]
+do
+  TAG_ID_INSTANCE="${TAG_ID}_${X}"
+
+  HTTP_EXTERNAL_PORT_N=$((HTTP_EXTERNAL_PORT_N + 1))
+  SSH_EXTERNAL_PORT_N=$((SSH_EXTERNAL_PORT_N + 1))
+  BITCOIN_EXTERNAL_PORT_N=$((BITCOIN_EXTERNAL_PORT_N + 1))
+
+  docker run --name "${TAG_ID_INSTANCE}" -d -p "${HTTP_EXTERNAL_PORT_N}:${HTTP_INTERNAL_PORT}" \
+   -p "${SSH_EXTERNAL_PORT_N}:${SSH_INTERNAL_PORT}" -p "${BITCOIN_EXTERNAL_PORT_N}:${BITCOIN_INTERNAL_PORT}" \
+   "$TAG_PREFIX"
+
+  let X=$((X + 1))
+done
+
+docker ps --all
+

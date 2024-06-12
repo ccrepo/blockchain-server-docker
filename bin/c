@@ -1,0 +1,229 @@
+#!/bin/bash
+
+# =============================
+# READ EMV
+# =============================
+
+if [[ ! -f "./env" ]]
+then
+  echo "./env file missing"
+  exit 1
+fi
+
+. ./env
+
+FULL_NODE_DEFAULT=N
+BITCOIN_GIT_DEVUSER_DEFAULT=${SERVER_DOCKER_GITUSER}
+
+# =============================
+# FUNCTION
+# =============================
+
+usage () {
+  echo "$1 usage: [ -FULL_NODE (Y|N) ] [ -BITCOIN_GIT_DEVUSER <git-devuser> ] - defaults -FULL_NODE N -BITCOIN_GIT_DEVUSER ccrepo"
+}
+
+full_node() {
+  if [[ "$2" != "Y" && "$2" != "N" ]]
+  then
+    usage "error: invalid argument -FULL_NODE '$2'."
+    exit 1
+  fi
+  
+  FULL_NODE=$2
+}
+
+bitcoin_git_devuser() {
+  if [[ "$2" == "" ]]
+  then
+    usage "error: invalid argument -BITCOIN_GIT_DEVUSER '$2'."
+    exit 1
+  fi
+
+  BITCOIN_GIT_DEVUSER="$2"
+}
+
+# =============================
+# PREAMBLE
+# =============================
+
+if [[ "${OSTYPE}" != "linux-gnu"* && "${OSTYPE}" != "darwin"* ]]
+then
+  echo "error: only linux and macOS supported"
+  exit 1
+fi
+
+if [[ "$#" != "0" && "$#" != "2" && "$#" != "4" ]]
+then
+  usage "error: wrong number of arguments."
+  exit 1
+fi
+
+if [[ "$1" == "-FULL_NODE" ]]
+then
+  full_node "$1" "$2"
+
+  if [[ "$#" == "2" ]]
+  then
+    BITCOIN_GIT_DEVUSER="${BITCOIN_GIT_DEVUSER_DEFAULT}"
+    
+  elif [[ "$3" == "-BITCOIN_GIT_DEVUSER" ]]
+  then
+    bitcoin_git_devuser "$3" "$4"
+
+  else
+    usage "error: invalid parameters."
+    exit 1
+  fi
+
+elif [[ "$1" == "-BITCOIN_GIT_DEVUSER" ]]
+then
+  bitcoin_git_devuser "$1" "$2"
+
+  if [[ "$#" != "2" ]]
+  then
+    usage "error: invalid parameters."
+    exit 1
+  fi
+
+  FULL_NODE="${FULL_NODE_DEFAULT}"
+  
+else
+  FULL_NODE="${FULL_NODE_DEFAULT}"
+  BITCOIN_GIT_DEVUSER="${BITCOIN_GIT_DEVUSER_DEFAULT}"
+fi
+
+echo "FULL_NODE='${FULL_NODE}'"
+echo "BITCOIN_GIT_DEVUSER='${BITCOIN_GIT_DEVUSER}'"
+
+# =============================
+# VARIABLES
+# =============================
+
+FULL_NODE=$2
+
+if [[ "${OSTYPE}" == "darwin"* ]]
+then
+  PROGRESS_PARAM='--progress=plain'
+fi
+
+# =============================
+# ACTION
+# =============================
+
+echo "TAG_PREFIX='${TAG_PREFIX}'"
+
+for i in ` (docker ps 2>&1) | grep -v 'CONTAINER ID' | grep "${TAG_PREFIX}" | cut -d' ' -f1`
+do
+  echo "stopping container $i"
+  docker stop "$i" 2>/dev/null
+  sleep 5
+done
+
+for i in ` (docker ps --all 2>&1) | grep -v 'CONTAINER ID' | grep "${TAG_PREFIX}" | cut -d' ' -f1 `
+do
+  echo "removing container $i"
+  docker rm "$i"
+done
+
+for i in ` (docker images -a 2>&1) | grep -v 'REPOSITORY' | egrep "${TAG_PREFIX}|ubuntu(.*)22.04" | awk '{ print $3 }' `
+do
+  echo "removing image $i"
+  docker rmi -f "$i"
+done
+
+docker images -a
+
+cd ..
+
+pwd
+
+if [[ ! -f "$DOCKER_FILE" ]]
+then
+  echo "docker file '$DOCKER_FILE' missing"
+  exit 1
+fi
+
+echo dockerfile "$DOCKER_FILE"
+
+rm -fr "$BUILD_DIR" 2>/dev/null
+
+if [[ -d "$BUILD_DIR"  ]]
+then
+  echo "dir '$BUILD_DIR' could not be deleted"
+  exit 1
+fi
+
+mkdir -p "$BUILD_DIR"
+
+if [[ ! -d "$BUILD_DIR" ]]
+then
+  echo "dir '$BUILD_DIR' could not be created"
+  exit 1
+fi
+
+# DO NOT PRUNE ALL docker buildx prune -f
+
+docker build $PROGRESS_PARAM --rm -f "$DOCKER_FILE"  --build-arg "SERVER_DOCKER_GITUSER=$SERVER_DOCKER_GITUSER" \
+ --build-arg "SERVER_DOCKER_BITCOIN_VERSION=$SERVER_DOCKER_BITCOIN_VERSION" --build-arg "FULL_NODE=$FULL_NODE" \
+ --build-arg "BITCOIN_GIT_DEVUSER=$BITCOIN_GIT_DEVUSER" --build-arg "CACHEBUST=$(date +%s)" -t "$TAG" "$BUILD_DIR"
+
+if [[ "$?" != "0" ]]
+then
+  echo "docker build command failed"
+  exit 1
+fi
+
+docker images
+
+if [[ "${FULL_NODE}" == "Y" ]]
+then
+  BITCOIN_VOLUME="`( docker volume ls 2>/dev/null ) | grep -v 'VOLUME NAME' | awk '{ print $2}' | grep '^bitcoinfs$' `"
+  echo "BITCOIN_VOLUME=${BITCOIN_VOLUME}"
+
+  if [[ "${BITCOIN_VOLUME}" == "" ]]
+  then
+    if [[ -d /data/bitcoin/volumes/1/bitcoinfs ]]
+    then
+      echo "creating volume 'bitcoinfs'."
+    
+      docker volume create --driver local --opt type=none --opt device=/data/bitcoin/volumes/1/bitcoinfs \
+      --opt o=bind bitcoinfs
+    
+      if [[ "$?" != "0" ]]
+      then
+        echo "could not create volume 'bitcoinfs'."
+        exit 1
+      fi
+    fi
+  fi
+
+  echo "starting container '$TAG_PREFIX'"
+
+  VOLUME_COUNT="`docker volume ls | grep bitcoinfs | wc -l | awk '{print $1}'`"
+ 
+  if [[ "${VOLUME_COUNT}" == "0" ]]
+  then
+    echo "running without /data volume"
+    docker run --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
+     -p "${SSH_EXTERNAL_PORT}:${SSH_INTERNAL_PORT}" -p "${BITCOIN_EXTERNAL_PORT}:${BITCOIN_INTERNAL_PORT}" \
+     "$TAG_PREFIX"
+  else
+    echo "running with /data volume"
+    docker run --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
+     -p "${SSH_EXTERNAL_PORT}:${SSH_INTERNAL_PORT}" -p "${BITCOIN_EXTERNAL_PORT}:${BITCOIN_INTERNAL_PORT}" \
+     -v bitcoinfs:/root/.bitcoin "$TAG_PREFIX"
+  fi
+
+else
+  echo "running"
+  docker run --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
+   -p "${SSH_EXTERNAL_PORT}:${SSH_INTERNAL_PORT}" -p "${BITCOIN_EXTERNAL_PORT}:${BITCOIN_INTERNAL_PORT}" \
+   "$TAG_PREFIX"
+fi
+
+sleep 10
+
+docker ps --all
+
+docker exec -it "$TAG_ID" bash
