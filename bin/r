@@ -1,4 +1,4 @@
 #!/bin/bash
 
-./c -FULL_NODE N -BITCOIN_GIT_DEVUSER ccpgh
+./c -FULL_NODE N -BITCOIN_GIT_DEVUSER ccrepo
 
