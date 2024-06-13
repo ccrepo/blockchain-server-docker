@@ -113,6 +113,8 @@ fi
 
 echo "TAG_PREFIX='${TAG_PREFIX}'"
 
+echo "stopping."
+
 for i in ` (docker ps 2>&1) | grep -v 'CONTAINER ID' | grep "${TAG_PREFIX}" | cut -d' ' -f1`
 do
   echo "stopping container $i"
@@ -120,11 +122,15 @@ do
   sleep 5
 done
 
+echo "remooving."
+
 for i in ` (docker ps --all 2>&1) | grep -v 'CONTAINER ID' | grep "${TAG_PREFIX}" | cut -d' ' -f1 `
 do
   echo "removing container $i"
   docker rm "$i"
 done
+
+echo "remooving."
 
 for i in ` (docker images -a 2>&1) | grep -v 'REPOSITORY' | egrep "${TAG_PREFIX}|ubuntu(.*)22.04" | awk '{ print $3 }' `
 do
@@ -133,6 +139,31 @@ do
 done
 
 docker images -a
+
+echo "checking network '${DOCKER_NETWORK_SUBSET}' using '${DOCKER_NETWORK_SUBSET_IP}' and '${DOCKER_NETWORK_NAME}' "
+
+FOUND=N
+
+for i in `docker network ls | awk '{ print $1 }' | grep -vi 'network'`
+do
+  SUBNET_COUNT="`docker network inspect $i | grep -i "${DOCKER_NETWORK_SUBSET_IP}" | grep -l "Subnet" | wc -l | awk '{ print $1 }'`"
+  NAME_COUNT="`docker network inspect $i | grep -i "${DOCKER_NETWORK_NAME}" | grep -l "Name" | wc -l | awk '{ print $1 }'`"
+  SUBNET_COUNT=0
+
+  if [[ "${NAME_COUNT}" -ne "0" || "${SUBNET_COUNT}" -ne "0" ]]
+  then
+    FOUND=Y
+    break
+  fi
+done
+
+if [[ "${FOUND}" == "N" ]]
+then
+  echo "creating network '${DOCKER_NETWORK_NAME}' with subnet '${DOCKER_NETWORK_SUBSET}' "
+  docker network create --subnet="${DOCKER_NETWORK_SUBSET}" "${DOCKER_NETWORK_NAME}"
+else
+  echo "creating network SKIP"
+fi
 
 cd ..
 
@@ -205,19 +236,22 @@ then
   if [[ "${VOLUME_COUNT}" == "0" ]]
   then
     echo "running without /data volume"
-    docker run --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
+    docker run --net "${DOCKER_NETWORK_NAME}" --ip "${DOCKER_NETWORK_START_IP}" --hostname "${DOCKER_NETWORK_NAME}0" \
+     --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
      -p "${SSH_EXTERNAL_PORT}:${SSH_INTERNAL_PORT}" -p "${BITCOIN_EXTERNAL_PORT}:${BITCOIN_INTERNAL_PORT}" \
      "$TAG_PREFIX"
   else
     echo "running with /data volume"
-    docker run --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
+    docker run --net "${DOCKER_NETWORK_NAME}" --ip "${DOCKER_NETWORK_START_IP}" --hostname "${DOCKER_NETWORK_NAME}0" \
+     --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
      -p "${SSH_EXTERNAL_PORT}:${SSH_INTERNAL_PORT}" -p "${BITCOIN_EXTERNAL_PORT}:${BITCOIN_INTERNAL_PORT}" \
      -v bitcoinfs:/root/.bitcoin "$TAG_PREFIX"
   fi
 
 else
   echo "running"
-  docker run --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
+  docker run --net "${DOCKER_NETWORK_NAME}" --ip "${DOCKER_NETWORK_START_IP}" --hostname "${DOCKER_NETWORK_NAME}0" \
+   --name "$TAG_ID" -d -p "${HTTP_EXTERNAL_PORT}:${HTTP_INTERNAL_PORT}" \
    -p "${SSH_EXTERNAL_PORT}:${SSH_INTERNAL_PORT}" -p "${BITCOIN_EXTERNAL_PORT}:${BITCOIN_INTERNAL_PORT}" \
    "$TAG_PREFIX"
 fi
