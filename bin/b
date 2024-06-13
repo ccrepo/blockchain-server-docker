@@ -1,6 +1,16 @@
 #!/bin/bash
 
 # =============================
+# DISABLED
+# =============================
+
+if [[ -f "./.disabled.flag" ]]
+then
+  echo "./.disabled.flag set. delete to continue"
+  exit 1
+fi
+
+# =============================
 # READ EMV
 # =============================
 
